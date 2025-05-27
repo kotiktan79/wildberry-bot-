@@ -1,0 +1,24 @@
+name: buyer-scan
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - run: python wildberry_alert_bot.py
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT:  ${{ secrets.TG_CHAT }}
+      - name: Commit seen.json
+        run: |
+          git config --global user.name  "alert-bot"
+          git config --global user.email "bot@none"
+          git add seen.json || true
+          git diff --staged --quiet || (git commit -m "update cache" && git push)
