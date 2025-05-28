@@ -1,7 +1,7 @@
 """wildberry_alert_bot.py  –  FINAL+ (2025-05)
 Multi-source BUYER radar bot
 ===========================================================
-• Tarama kaynakları:  OLX, Facebook Grupları, SEAP RSS, Agrobiznis.ro, Google Alerts  
+• Tarama kaynakları:  OLX (Çoklu Ülkeler), Facebook Grupları, SEAP RSS, Agrobiznis.ro, Google Alerts, eBay, Alibaba  
 • İzlenen ürünler:  Kuşburnu, Aronya, Mürver, Deniz İğdesi, Lavanta, Kekik  
 • Yalnızca **alım** (cumpăr / buy) ilanlarını yakalar  
 • Gördüklerini `seen.json`’da saklar, Telegram’da bildirir.  
@@ -9,7 +9,7 @@ Multi-source BUYER radar bot
 • GitHub Actions cron (*/15 dk) ücretsiz çalışacak şekilde `run_once()` mantığında.  
 """
 from __future__ import annotations
-import os, re, json, hashlib, logging, requests, time
+import os, re, json, hashlib, logging, requests
 from dataclasses import dataclass
 from typing import Iterable, List
 from pathlib import Path
@@ -21,31 +21,26 @@ from bs4 import BeautifulSoup
 #######################################################################
 TG_TOKEN = os.getenv("TG_TOKEN", "")
 TG_CHAT  = os.getenv("TG_CHAT",  "")
-HEADERS  = {"User-Agent": "WildBerryBot/1.1"}
+HEADERS  = {"User-Agent": "WildBerryBot/1.0"}
 
 # --- Anahtar sözcükler (yalnızca ALICI) ---------------------------------------
 KEYWORDS: List[str] = [
     # Kuşburnu / Rosehip
     r"cump[ăa]r macese",
     r"buy dried rosehip",
-
     # Aronya / Chokeberry
     r"cump[ăa]r aronia uscat[ăa]",
     r"buy dried aronia",
     r"buy dried chokeberry",
-
     # Mürver / Elderberry
     r"cump[ăa]r soc uscat",
     r"buy dried elderberry",
-
     # Deniz iğdesi / Sea-buckthorn
     r"cump[ăa]r c[ăa]tin[ăa] uscat[ăa]",
     r"buy dried sea[\- ]?buckthorn",
-
     # Lavanta / Lavender
     r"cump[ăa]r lavand[ăa] uscat[ăa]",
     r"buy dried lavender",
-
     # Kekik / Thyme
     r"cump[ăa]r cimbru uscat",
     r"buy dried thyme",
@@ -92,26 +87,29 @@ class BaseCrawler:
 #######################################################################
 class OLXCrawler(BaseCrawler):
     platform = "OLX"
-    URL = "https://www.olx.ro/oferte/q-{kw}/?search%5Border%5D=created_at:desc"
+    URLS = [
+        "https://www.olx.ro/oferte/q-{kw}/",
+        "https://www.olx.pl/oferty/q-{kw}/",
+        "https://www.olx.hu/allas/q-{kw}/",
+    ]
     def crawl(self):
-        for pat in KEYWORDS:
-            slug = re.sub(r"[^\w]+", "-", pat.split()[1])
-            try:
-                resp = requests.get(self.URL.format(kw=slug), headers=HEADERS, timeout=15)
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for card in soup.select("div[data-testid='offer-card']"):
-                    a = card.find("a", href=True)
-                    if not a:
-                        continue
-                    link = a["href"].split("#")[0]
-                    adv_id = link.split("-")[-1].rstrip(".html")
-                    title  = card.select_one("h6").text.strip()
-                    if not re.search(r"cump[ăa]r|cumpar|buy", title, re.I):
-                        continue
-                    price = (card.select_one("p[data-testid='ad-price']") or {}).get_text(strip=True, default="-")
-                    yield Advert(adv_id, self.platform, title, price, link)
-            except Exception as e:
-                logging.error("OLX error: %s", e)
+        for url in self.URLS:
+            for pat in KEYWORDS:
+                slug = re.sub(r"[^\w]+", "-", pat.split()[1])
+                try:
+                    resp = requests.get(url.format(kw=slug), headers=HEADERS, timeout=15)
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for card in soup.select("div[data-testid='offer-card']"):
+                        a = card.find("a", href=True)
+                        if not a:
+                            continue
+                        link = a["href"].split("#")[0]
+                        adv_id = link.split("-")[-1].rstrip(".html")
+                        title  = card.select_one("h6").text.strip()
+                        price  = (card.select_one("p[data-testid='ad-price']") or {}).get_text(strip=True, default="-")
+                        yield Advert(adv_id, self.platform, title, price, link)
+                except Exception as e:
+                    logging.error("OLX error: %s", e)
 
 class FBGroupCrawler(BaseCrawler):
     platform = "Facebook"
@@ -188,13 +186,56 @@ class GoogleAlertCrawler(BaseCrawler):
             except Exception as e:
                 logging.error("GoogleAlerts error: %s", e)
 
-ALL_CRAWLERS: List[BaseCrawler] = [
-    OLXCrawler(), FBGroupCrawler(), SEAPCrawler(), AgroCrawler(), GoogleAlertCrawler()
-]
+class EbayCrawler(BaseCrawler):
+    platform = "eBay"
+    URL = "https://www.ebay.com/sch/i.html?_nkw={kw}"
+    def crawl(self):
+        for pat in KEYWORDS:
+            slug = "+".join(pat.split()[1:])
+            try:
+                resp = requests.get(self.URL.format(kw=slug), headers=HEADERS, timeout=15)
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for item in soup.select("li.s-item"):  
+                    a = item.select_one("a.s-item__link")
+                    if not a: continue
+                    link = a["href"]
+                    title = a.get_text(strip=True)
+                    if not re.search(r"buy|cump[ăa]r", title, re.I): continue
+                    price_el = item.select_one(".s-item__price")
+                    price = price_el.get_text(strip=True) if price_el else "-"
+                    adv_id = hashlib.md5(link.encode()).hexdigest()[:12]
+                    yield Advert(adv_id, self.platform, title, price, link)
+            except Exception as e:
+                logging.error("eBay error: %s", e)
+
+class AlibabaCrawler(BaseCrawler):
+    platform = "Alibaba"
+    URL = "https://www.alibaba.com/trade/search?fsb=y&IndexArea=product_en&SearchText={kw}"
+    def crawl(self):
+        for pat in KEYWORDS:
+            slug = "+".join(pat.split()[1:])
+            try:
+                resp = requests.get(self.URL.format(kw=slug), headers=HEADERS, timeout=20)
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for card in soup.select("div.J-offer-list-row"):  
+                    a = card.select_one("a.PortalCard__img-link")
+                    if not a: continue
+                    href = a.get("href", "")
+                    link = f"https:{href}" if href.startswith("//") else href
+                    title = card.select_one("h2").get_text(strip=True)
+                    if not re.search(r"buy|cump[ăa]r", title, re.I): continue
+                    adv_id = hashlib.md5(link.encode()).hexdigest()[:12]
+                    yield Advert(adv_id, self.platform, title, "-", link)
+            except Exception as e:
+                logging.error("Alibaba error: %s", e)
 
 #######################################################################
-# ➤ 5) RUN_ONCE (GitHub Actions cron çağrısı)
+# ➤ 5) ALL_CRAWLERS & RUN_ONCE
 #######################################################################
+ALL_CRAWLERS: List[BaseCrawler] = [
+    OLXCrawler(), FBGroupCrawler(), SEAPCrawler(), AgroCrawler(),
+    GoogleAlertCrawler(), EbayCrawler(), AlibabaCrawler()
+]
 
 def run_once():
     new_count = 0
