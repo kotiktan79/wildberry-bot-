@@ -1,12 +1,12 @@
 """wildberry_alert_bot.py  –  FINAL+ DRY PURCHASES ONLY (2025-05)
 Multi-source DRY BUYER radar bot
 ===========================================================
-• Tarama kaynakları:  OLX (Çoklu Ülkeler), Facebook Grupları, SEAP RSS, Agrobiznis.ro, Google Alerts, eBay, Alibaba  
-• İzlenen ürünler:  Kuru Kuşburnu, Aronya, Mürver, Deniz İğdesi, Lavanta, Kekik (yalnızca kuru şekli)  
-• Yalnızca **kuru ürün alım** ilanlarını yakalar  
-• Gördüklerini `seen.json`’da saklar, Telegram’da bildirir.  
-• Her yeni ilan tespitinde `last_alert.txt` UTC zaman damgası yazar  
-• GitHub Actions cron (*/15 dk) ücretsiz çalışacak şekilde `run_once()` mantığında.  
+• Kaynaklar: OLX (Çoklu Ülkeler), Facebook Grupları, SEAP RSS, Agrobiznis.ro, Google Alerts, eBay, Alibaba
+• Ürünler: Kuru Kuşburnu, Aronya, Mürver, Deniz İğdesi, Lavanta, Kekik
+• Yalnızca “dried” / “uscat” içeren ALICI ilanları (cumpăr/buy) yakalar
+• Gördüklerini seen.json’da saklar, Telegram’da bildirir
+• Her yeni ilan tespitinde last_alert.txt UTC zaman damgası yazar
+• GitHub Actions cron (*/15 dk) ile ücretsiz çalışır
 """
 from __future__ import annotations
 import os, re, json, hashlib, logging, requests
@@ -16,83 +16,40 @@ from pathlib import Path
 from datetime import datetime
 from bs4 import BeautifulSoup
 
-#######################################################################
-# ➤ 1) GLOBAL CONFIG
-#######################################################################
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-TG_TOKEN = os.getenv("TG_TOKEN", "")
-TG_CHAT  = os.getenv("TG_CHAT",  "")
-HEADERS  = {"User-Agent": "WildBerryBot/1.0"}
 
-# --- Anahtar sözcükler (SADECE KURU ÜRÜN ALICI) ---------------------------
+# ➤ 1) GLOBAL CONFIG
+TG_TOKEN  = os.getenv("TG_TOKEN", "")
+TG_CHAT   = os.getenv("TG_CHAT", "")
+HEADERS   = {"User-Agent": "WildBerryBot/1.0"}
+
+# ➤ Anahtar sözcükler
 KEYWORDS: List[str] = [
-    # Kuru Kuşburnu / Rosehip
-    r"cump[ăa]r macese uscat[ăa]",
-    r"buy dried rosehip",
-
-    # Kuru Aronya / Chokeberry
-    r"cump[ăa]r aronia uscat[ăa]",
-    r"buy dried aronia",
-    r"buy dried chokeberry",
-
-    # Kuru Mürver / Elderberry
-    r"cump[ăa]r soc uscat",
-    r"buy dried elderberry",
-
-    # Kuru Deniz İğdesi / Sea-buckthorn
-    r"cump[ăa]r c[ăa]tin[ăa] uscat[ăa]",
-    r"buy dried sea[\- ]?buckthorn",
-
-    # Kuru Lavanta / Lavender
-    r"cump[ăa]r lavand[ăa] uscat[ăa]",
-    r"buy dried lavender",
-
-    # Kuru Kekik / Thyme
-    r"cump[ăa]r cimbru uscat",
-    r"buy dried thyme",
+    r"cump[ăa]r macese uscat[ăa]", r"buy dried rosehip",
+    r"cump[ăa]r aronia uscat[ăa]",    r"buy dried aronia",    r"buy dried chokeberry",
+    r"cump[ăa]r soc uscat",           r"buy dried elderberry",
+    r"cump[ăa]r c[ăa]tin[ăa] uscat[ăa]", r"buy dried sea[- ]?buckthorn",
+    r"cump[ăa]r lavand[ăa] uscat[ăa]", r"buy dried lavender",
+    r"cump[ăa]r cimbru uscat",        r"buy dried thyme",
 ]
 
 SEEN_FILE = Path("seen.json")
 _seen: set[str] = set(json.loads(SEEN_FILE.read_text()) if SEEN_FILE.exists() else [])
 
-#######################################################################
-# ➤ 2) UTILS
-#######################################################################
-
-def tg(msg: str) -> None:
-    if not TG_TOKEN or not TG_CHAT:
-        logging.warning("Telegram creds missing – message skipped")
-        return
-    try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_CHAT, "text": msg, "disable_web_page_preview": True},
-            timeout=15,
-        )
-        if not resp.ok:
-            logging.error("Telegram send error: %s", resp.text)
-    except Exception as e:
-        logging.error("Telegram send exception: %s", e)
-
-#######################################################################
-# ➤ 3) DATA CLASS & BASE
-#######################################################################
 @dataclass
 class Advert:
-    adv_id:  str
+    adv_id: str
     platform: str
-    title:   str
-    price:   str
-    url:     str
+    title: str
+    price: str
+    url: str
 
 class BaseCrawler:
     platform: str = "base"
     def crawl(self) -> Iterable[Advert]:
         raise NotImplementedError
 
-#######################################################################
-# ➤ 4) CRAWLER IMPLEMENTATIONS
-#######################################################################
+# ➤ Crawlers
 class OLXCrawler(BaseCrawler):
     platform = "OLX"
     URLS = [
@@ -108,10 +65,12 @@ class OLXCrawler(BaseCrawler):
                     resp = requests.get(url.format(kw=slug), headers=HEADERS, timeout=15)
                     soup = BeautifulSoup(resp.text, "html.parser")
                     for card in soup.select("div[data-testid='offer-card']"):
-                        a = card.find("a", href=True)
-                        if not a: continue
                         title = card.select_one("h6").text.strip()
-                        if not re.search(r"dried|uscat", title, re.I): continue
+                        if not re.search(r"uscat|dried", title, re.I):
+                            continue
+                        if not any(re.search(pat, title, re.I) for pat in KEYWORDS):
+                            continue
+                        a = card.find("a", href=True)
                         link = a["href"].split("#")[0]
                         adv_id = link.split("-")[-1].rstrip(".html")
                         price = (card.select_one("p[data-testid='ad-price']") or {}).get_text(strip=True, default="-")
@@ -131,12 +90,11 @@ class FBGroupCrawler(BaseCrawler):
             try:
                 resp = requests.get(url, headers=HEADERS, timeout=20)
                 soup = BeautifulSoup(resp.text, "html.parser")
-                for post in soup.findall(string=re.compile(r"cump[ăa]r.*uscat", re.I)):
+                for post in soup.find_all(string=re.compile(r"cump[ăa]r.*uscat|buy.*dried", re.I)):
                     link = post.find_parent("a", href=True)
-                    if not link: continue
                     adv_id = hashlib.md5(link["href"].encode()).hexdigest()[:12]
-                    title = post.strip()[:120]
-                    yield Advert(adv_id, self.platform, title, "-", "https://m.facebook.com"+link["href"])
+                    title = post.strip()
+                    yield Advert(adv_id, self.platform, title, "-", "https://m.facebook.com" + link["href"])
             except Exception as e:
                 logging.error("Facebook error: %s", e)
 
@@ -147,9 +105,10 @@ class SEAPCrawler(BaseCrawler):
         try:
             resp = requests.get(self.FEED, timeout=15)
             soup = BeautifulSoup(resp.text, "xml")
-            for itm in soup.findall("item"):
+            for itm in soup.find_all("item"):
                 title = itm.title.text
-                if not re.search(r"macese.*uscat", title, re.I): continue
+                if not re.search(r"macese.*uscat", title, re.I):
+                    continue
                 adv_id = itm.guid.text.strip()
                 yield Advert(adv_id, self.platform, title, "-", itm.link.text)
         except Exception as e:
@@ -164,29 +123,28 @@ class AgroCrawler(BaseCrawler):
             soup = BeautifulSoup(resp.text, "html.parser")
             for art in soup.select("article"):
                 title = art.h2.text.strip()
-                if not re.search(r"cump[ăa]r.*uscat", title, re.I): continue
+                if not re.search(r"cump[ăa]r.*uscat", title, re.I):
+                    continue
                 link = art.find("a", href=True)["href"]
                 adv_id = link.split("/")[-1]
                 yield Advert(adv_id, self.platform, title, "-", link)
         except Exception as e:
-            logging.error("Agrobiznis error: %s", e)
+            logging.error("Agro error: %s", e)
 
 class GoogleAlertCrawler(BaseCrawler):
     platform = "Google"
-    FEEDS = [
-        "https://alerts.google.com/rss/16720972385691715855/9476993441358872255",
-    ]
+    FEEDS = ["https://alerts.google.com/rss/16720972385691715855/9476993441358872255"]
     def crawl(self):
         for feed in self.FEEDS:
             try:
                 resp = requests.get(feed, timeout=15)
                 soup = BeautifulSoup(resp.text, "xml")
-                for itm in soup.findall("item"):
+                for itm in soup.find_all("item"):
                     title = itm.title.text
-                    if not re.search(r"dry|dried", title, re.I): continue
-                    link = itm.link.text
-                    adv_id = hashlib.md5(link.encode()).hexdigest()[:12]
-                    yield Advert(adv_id, self.platform, title, "-", link)
+                    if not re.search(r"dried|dry", title, re.I):
+                        continue
+                    adv_id = hashlib.md5(itm.link.text.encode()).hexdigest()[:12]
+                    yield Advert(adv_id, self.platform, title, "-", itm.link.text)
             except Exception as e:
                 logging.error("GoogleAlerts error: %s", e)
 
@@ -201,9 +159,12 @@ class EbayCrawler(BaseCrawler):
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for item in soup.select("li.s-item"):
                     a = item.select_one("a.s-item__link")
-                    if not a: continue
+                    if not a:
+                        continue
                     title = a.get_text(strip=True)
-                    if not re.search(r"dried|dry", title, re.I): continue
+                    # Sadece anahtar kelime kalıplarıyla eşleşen ilanlar
+                    if not any(re.search(pat, title, re.I) for pat in KEYWORDS):
+                        continue
                     link = a["href"]
                     price_el = item.select_one(".s-item__price")
                     price = price_el.get_text(strip=True) if price_el else "-"
@@ -223,9 +184,12 @@ class AlibabaCrawler(BaseCrawler):
                 soup = BeautifulSoup(resp.text, "html.parser")
                 for card in soup.select("div.J-offer-list-row"):
                     a = card.select_one("a.PortalCard__img-link")
-                    if not a: continue
+                    if not a:
+                        continue
                     title = card.select_one("h2").get_text(strip=True)
-                    if not re.search(r"dried|dry", title, re.I): continue
+                    # Sadece anahtar kelime kalıplarıyla eşleşen ilanlar
+                    if not any(re.search(pat, title, re.I) for pat in KEYWORDS):
+                        continue
                     href = a.get("href", "")
                     link = f"https:{href}" if href.startswith("//") else href
                     adv_id = hashlib.md5(link.encode()).hexdigest()[:12]
@@ -233,14 +197,10 @@ class AlibabaCrawler(BaseCrawler):
             except Exception as e:
                 logging.error("Alibaba error: %s", e)
 
-#######################################################################
-# ➤ 5) ALL_CRAWLERS & RUN_ONCE
-#######################################################################
 ALL_CRAWLERS: List[BaseCrawler] = [
     OLXCrawler(), FBGroupCrawler(), SEAPCrawler(), AgroCrawler(),
     GoogleAlertCrawler(), EbayCrawler(), AlibabaCrawler()
 ]
-
 
 def run_once():
     new_count = 0
@@ -251,7 +211,6 @@ def run_once():
             _seen.add(adv.adv_id)
             new_count += 1
             tg(f"📢 BUYER • {adv.platform}\n{adv.title}\n{adv.price}\n{adv.url}")
-    # Yeni ilan tespitinde zaman damgası yaz
     if new_count:
         Path("last_alert.txt").write_text(datetime.utcnow().isoformat())
     logging.info("run_once done – %d new", new_count)
