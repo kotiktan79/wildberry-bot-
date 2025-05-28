@@ -5,13 +5,15 @@ Multi-source BUYER radar bot
 • İzlenen ürünler:  Kuşburnu, Aronya, Mürver, Deniz İğdesi, Lavanta, Kekik  
 • Yalnızca **alım** (cumpăr / buy) ilanlarını yakalar  
 • Gördüklerini `seen.json`’da saklar, Telegram’da bildirir.  
+• Her yeni ilan tespitinde `last_alert.txt` UTC zaman damgası yazar  
 • GitHub Actions cron (*/15 dk) ücretsiz çalışacak şekilde `run_once()` mantığında.  
 """
 from __future__ import annotations
-import os, re, json, hashlib, logging, requests
+import os, re, json, hashlib, logging, requests, time
 from dataclasses import dataclass
 from typing import Iterable, List
 from pathlib import Path
+from datetime import datetime
 from bs4 import BeautifulSoup
 
 #######################################################################
@@ -95,10 +97,8 @@ class OLXCrawler(BaseCrawler):
         for pat in KEYWORDS:
             slug = re.sub(r"[^\w]+", "-", pat.split()[1])
             try:
-                soup = BeautifulSoup(
-                    requests.get(self.URL.format(kw=slug), headers=HEADERS, timeout=15).text,
-                    "html.parser"
-                )
+                resp = requests.get(self.URL.format(kw=slug), headers=HEADERS, timeout=15)
+                soup = BeautifulSoup(resp.text, "html.parser")
                 for card in soup.select("div[data-testid='offer-card']"):
                     a = card.find("a", href=True)
                     if not a:
@@ -123,7 +123,8 @@ class FBGroupCrawler(BaseCrawler):
     def crawl(self):
         for url in self.GROUPS:
             try:
-                soup = BeautifulSoup(requests.get(url, headers=HEADERS, timeout=20).text, "html.parser")
+                resp = requests.get(url, headers=HEADERS, timeout=20)
+                soup = BeautifulSoup(resp.text, "html.parser")
                 for post in soup.find_all(string=re.compile(r"cump[ăa]r", re.I)):
                     link = post.find_parent("a", href=True)
                     if not link:
@@ -132,14 +133,15 @@ class FBGroupCrawler(BaseCrawler):
                     title  = post.strip()[:120]
                     yield Advert(adv_id, self.platform, title, "-", "https://m.facebook.com"+link["href"])
             except Exception as e:
-                logging.error("FB error: %s", e)
+                logging.error("Facebook error: %s", e)
 
 class SEAPCrawler(BaseCrawler):
     platform = "SEAP"
     FEED = "https://e-licitatie.ro/pub/notices-rss?tip=3&cuvinte_cheie=macese"
     def crawl(self):
         try:
-            soup = BeautifulSoup(requests.get(self.FEED, timeout=15).text, "xml")
+            resp = requests.get(self.FEED, timeout=15)
+            soup = BeautifulSoup(resp.text, "xml")
             for itm in soup.find_all("item"):
                 title = itm.title.text
                 if not re.search(r"macese|aronia|lavand|cimbru|fructe|uscate", title, re.I):
@@ -154,7 +156,8 @@ class AgroCrawler(BaseCrawler):
     URL = "https://agrobiznis.ro/category/anunturi/?s=macese"
     def crawl(self):
         try:
-            soup = BeautifulSoup(requests.get(self.URL, headers=HEADERS, timeout=15).text, "html.parser")
+            resp = requests.get(self.URL, headers=HEADERS, timeout=15)
+            soup = BeautifulSoup(resp.text, "html.parser")
             for art in soup.select("article"):
                 title = art.h2.text.strip()
                 if not re.search(r"cump[ăa]r", title, re.I):
@@ -163,7 +166,7 @@ class AgroCrawler(BaseCrawler):
                 adv_id = link.split("/")[-1]
                 yield Advert(adv_id, self.platform, title, "-", link)
         except Exception as e:
-            logging.error("Agro error: %s", e)
+            logging.error("Agrobiznis error: %s", e)
 
 class GoogleAlertCrawler(BaseCrawler):
     platform = "Google"
@@ -173,7 +176,8 @@ class GoogleAlertCrawler(BaseCrawler):
     def crawl(self):
         for feed in self.FEEDS:
             try:
-                soup = BeautifulSoup(requests.get(feed, timeout=15).text, "xml")
+                resp = requests.get(feed, timeout=15)
+                soup = BeautifulSoup(resp.text, "xml")
                 for itm in soup.find_all("item"):
                     title = itm.title.text
                     if not re.search(r"cump[ăa]r|buy", title, re.I):
@@ -202,6 +206,9 @@ def run_once():
             new_count += 1
             tg(f"📢 BUYER • {adv.platform}\n{adv.title}\n{adv.price}\n{adv.url}")
             logging.info("NEW %s | %s", adv.platform, adv.title[:60])
+    # Yeni ilan tespitinde zaman damgası yaz
+    if new_count:
+        Path("last_alert.txt").write_text(datetime.utcnow().isoformat())
     logging.info("run_once done – %d new", new_count)
     SEEN_FILE.write_text(json.dumps(list(_seen)))
 
