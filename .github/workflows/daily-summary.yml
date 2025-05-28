@@ -1,0 +1,55 @@
+name: daily-summary
+
+on:
+  schedule:
+    # Chita saatiyle her gün 18:00 → UTC 09:00
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Daily no-alert notification
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT:  ${{ secrets.TG_CHAT }}
+        run: |
+          python - << 'PYCODE'
+          import os
+          from datetime import datetime, timedelta
+          from pathlib import Path
+          import requests
+
+          # Son uyarı zamanını oku
+          last_file = Path("last_alert.txt")
+          now = datetime.utcnow()
+
+          if last_file.exists():
+              last = datetime.fromisoformat(last_file.read_text().strip())
+          else:
+              last = now - timedelta(days=1, minutes=1)
+
+          # Eğer 24 saat geçtiyse Telegram'a uyarı gönder
+          if now - last > timedelta(hours=24):
+              requests.post(
+                  f"https://api.telegram.org/bot{os.getenv('TG_TOKEN')}/sendMessage",
+                  json={
+                    "chat_id": os.getenv('TG_CHAT'),
+                    "text": "⚠️ Uyarı: Son 24 saatte hiç yeni ilan bulunamadı."
+                  },
+                  timeout=15
+              )
+          PYCODE
