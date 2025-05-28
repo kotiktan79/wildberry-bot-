@@ -8,7 +8,6 @@ Multi-source BUYER radar bot
 • GitHub Actions cron (*/15 dk) ücretsiz çalışacak şekilde `run_once()` mantığında.  
 """
 from __future__ import annotations
-
 import os, re, json, hashlib, logging, requests
 from dataclasses import dataclass
 from typing import Iterable, List
@@ -96,7 +95,10 @@ class OLXCrawler(BaseCrawler):
         for pat in KEYWORDS:
             slug = re.sub(r"[^\w]+", "-", pat.split()[1])
             try:
-                soup = BeautifulSoup(requests.get(self.URL.format(kw=slug), headers=HEADERS, timeout=15).text, "html.parser")
+                soup = BeautifulSoup(
+                    requests.get(self.URL.format(kw=slug), headers=HEADERS, timeout=15).text,
+                    "html.parser"
+                )
                 for card in soup.select("div[data-testid='offer-card']"):
                     a = card.find("a", href=True)
                     if not a:
@@ -114,9 +116,9 @@ class OLXCrawler(BaseCrawler):
 class FBGroupCrawler(BaseCrawler):
     platform = "Facebook"
     GROUPS = [
-        "https://m.facebook.com/groups/987430631290887",  # Achiziții plante medicinale
-        "https://m.facebook.com/groups/1413126708753304", # Fructe de pădure group
-        "https://m.facebook.com/groups/1292085071431761",  # Aronia & Cătină România
+        "https://m.facebook.com/groups/987430631290887",
+        "https://m.facebook.com/groups/1413126708753304",
+        "https://m.facebook.com/groups/1292085071431761",
     ]
     def crawl(self):
         for url in self.GROUPS:
@@ -166,7 +168,7 @@ class AgroCrawler(BaseCrawler):
 class GoogleAlertCrawler(BaseCrawler):
     platform = "Google"
     FEEDS = [
-        "https://alerts.google.com/rss/16720972385691715855/9476993441358872255",  # cumpăr măceșe
+        "https://alerts.google.com/rss/16720972385691715855/9476993441358872255",
     ]
     def crawl(self):
         for feed in self.FEEDS:
@@ -182,7 +184,6 @@ class GoogleAlertCrawler(BaseCrawler):
             except Exception as e:
                 logging.error("GoogleAlerts error: %s", e)
 
-#######################################################################
 ALL_CRAWLERS: List[BaseCrawler] = [
     OLXCrawler(), FBGroupCrawler(), SEAPCrawler(), AgroCrawler(), GoogleAlertCrawler()
 ]
@@ -201,4 +202,9 @@ def run_once():
             new_count += 1
             tg(f"📢 BUYER • {adv.platform}\n{adv.title}\n{adv.price}\n{adv.url}")
             logging.info("NEW %s | %s", adv.platform, adv.title[:60])
-    SEEN
+    logging.info("run_once done – %d new", new_count)
+    SEEN_FILE.write_text(json.dumps(list(_seen)))
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    run_once()
